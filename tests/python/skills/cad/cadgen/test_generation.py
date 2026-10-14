@@ -673,6 +673,37 @@ class CadGenerationTests(unittest.TestCase):
         self.assertIsNotNone(scene)
         self.assertIn("printing_part: 1 box placed", captured_out.getvalue())
 
+    def test_an_empty_shape_is_refused_as_the_models_mistake_not_a_crash(self) -> None:
+        # build123d asserts on an empty shape's geometry; unchecked, that
+        # AssertionError surfaced from inside the STEP export as cadgen's bug.
+        from cadgen import analytics
+
+        script_path = self.temp_root / "empty_part.py"
+        script_path.write_text(
+            "\n".join(
+                [
+                    "from cadgen import step",
+                    "@step",
+                    "def model():",
+                    "    import build123d",
+                    "    return build123d.Part()",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        spec = next(spec for spec in list_entry_specs() if spec.source_path == script_path)
+        # Caught by hand: assertRaises drops the traceback, which is what telemetry reads.
+        try:
+            cad_generation.run_script_generator(spec, "step")
+        except ValueError as error:
+            refusal = error
+        else:
+            self.fail("an empty shape built")
+        self.assertRegex(str(refusal), r"empty_part\.py @step returned an empty shape: it holds no geometry")
+        self.assertEqual("refused", analytics.build_failure(refusal))
+        self.assertIsNone(analytics.signature(refusal, "build", bugs_only=True))
+
     def test_bare_shape_return_is_supported_for_step_generation(self) -> None:
         script_path = self.temp_root / "bare_part.py"
         script_path.write_text(
@@ -1054,15 +1085,15 @@ class CadGenerationTests(unittest.TestCase):
     def test_step_toml_target_is_not_supported(self) -> None:
         (self.temp_root / "broken.step.toml").write_text('kind = "part"\n', encoding="utf-8")
 
-        with self.assertRaisesRegex(FileNotFoundError, "Python generator or STEP/STP file path"):
+        with self.assertRaisesRegex(FileNotFoundError, "not a model script cadgen can build.*python <model>.py"):
             cad_generation.generate_step_targets([str(self.temp_root / "broken.step.toml")])
 
     def test_direct_step_targets_are_rejected(self) -> None:
-        # model-script runs build model() sources only; an imported STEP gets its render
-        # artifacts on demand (inspect/snapshot/viewer) or via cadgen import.
+        # model-script runs build model scripts only; a STEP document needs no build --
+        # every command that reads one compiles its tree on demand.
         step_path = self._write_step("source")
 
-        with self.assertRaisesRegex(ValueError, "builds @step Python sources only"):
+        with self.assertRaisesRegex(ValueError, "builds model scripts only.*is a document"):
             cad_generation.generate_step_targets([str(step_path)])
 
     def test_step_cli_flags_apply_to_generated_python_targets(self) -> None:
@@ -1077,13 +1108,13 @@ class CadGenerationTests(unittest.TestCase):
             cad_generation.generate_step_targets(
                 [str(script_path)],
                 step_options=self._step_options(
-                    mesh_tolerance=0.2,
+                    mesh_tolerance=0.02,
                     mesh_angular_tolerance=0.3,
                 ),
             )
 
         self.assertEqual(1, len(calls))
-        self.assertEqual(0.2, calls[0].mesh_tolerance)
+        self.assertEqual(0.02, calls[0].mesh_tolerance)
         self.assertEqual(0.3, calls[0].mesh_angular_tolerance)
 
     def test_generator_discovery_rejects_none_gen_step(self) -> None:
@@ -1159,18 +1190,18 @@ class CadGenerationTests(unittest.TestCase):
 
         _all, selected = cad_generation._selected_specs_for_targets(
             [str(step_path)],
-            step_options=self._step_options(mesh_tolerance=0.9, mesh_angular_tolerance=0.45),
+            step_options=self._step_options(mesh_tolerance=0.009, mesh_angular_tolerance=0.45),
         )
 
         self.assertEqual(1, len(selected))
-        self.assertEqual(0.9, selected[0].mesh_tolerance)
+        self.assertEqual(0.009, selected[0].mesh_tolerance)
         self.assertEqual(0.45, selected[0].mesh_angular_tolerance)
 
     def test_generate_part_outputs_emits_package(self) -> None:
         step_path = self._write_step("selector-output")
         _, selected_specs = cad_generation._selected_specs_for_targets(
             [str(step_path)],
-            step_options=self._step_options(mesh_tolerance=0.3, mesh_angular_tolerance=0.2),
+            step_options=self._step_options(mesh_tolerance=0.003, mesh_angular_tolerance=0.2),
         )
         spec = selected_specs[0]
         scene = self._fake_scene(step_path)
@@ -1196,7 +1227,7 @@ class CadGenerationTests(unittest.TestCase):
         step_path = self._write_step("preloaded")
         _, selected_specs = cad_generation._selected_specs_for_targets(
             [str(step_path)],
-            step_options=self._step_options(mesh_tolerance=0.3, mesh_angular_tolerance=0.2),
+            step_options=self._step_options(mesh_tolerance=0.003, mesh_angular_tolerance=0.2),
         )
         spec = selected_specs[0]
         scene = self._fake_scene(step_path)
